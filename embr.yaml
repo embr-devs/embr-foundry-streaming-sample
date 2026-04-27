@@ -1,0 +1,11 @@
+platform: nodejs
+platformVersion: "24"
+autoDeploy: true
+
+run:
+  port: 8000
+
+healthCheck:
+  enabled: true
+  path: "/health"
+  expectedStatusCode: 200

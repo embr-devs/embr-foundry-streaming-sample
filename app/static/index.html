@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Embr × Foundry — streaming SSE</title>
+  <style>
+    :root { color-scheme: dark light; --bg:#0b0d10; --panel:#14181d; --border:#232a31; --fg:#e8eef5; --muted:#8a96a3; --accent:#6aa9ff; --user:#243042; --asst:#1a2330; --tool:#1f2a1c; }
+    body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--fg); }
+    header { padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; gap: 12px; align-items: baseline; }
+    header h1 { font-size: 1.05rem; margin: 0; font-weight: 600; }
+    header .meta { color: var(--muted); font-size: 0.85rem; }
+    main { max-width: 820px; margin: 0 auto; padding: 16px; }
+    #log { display: flex; flex-direction: column; gap: 8px; min-height: 60vh; }
+    .msg { padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border); white-space: pre-wrap; }
+    .msg.user { background: var(--user); align-self: flex-end; max-width: 75%; }
+    .msg.asst { background: var(--asst); align-self: flex-start; max-width: 75%; }
+    .msg.sys  { background: var(--tool); color: var(--muted); font-size: 0.78rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    form { display: flex; gap: 8px; margin-top: 16px; }
+    input[type=text] { flex: 1; background: var(--panel); color: var(--fg); border: 1px solid var(--border); padding: 10px 12px; border-radius: 6px; font-size: 0.95rem; }
+    input[type=text]:focus { outline: none; border-color: var(--accent); }
+    button { background: var(--panel); color: var(--fg); border: 1px solid var(--border); padding: 6px 10px; border-radius: 6px; cursor: pointer; font-size: 0.85rem; }
+    button:hover { border-color: var(--accent); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Embr × Foundry · streaming SSE</h1>
+    <span class="meta" id="meta">loading…</span>
+  </header>
+  <main>
+    <div id="log"></div>
+    <form id="form">
+      <input id="input" type="text" placeholder="Try: write me a 4-paragraph story about a debugging panda" autocomplete="off" />
+      <button type="submit">Send</button>
+    </form>
+  </main>
+
+<script>
+const log = document.getElementById('log');
+const meta = document.getElementById('meta');
+const history = [];
+
+async function refreshMeta() {
+  try {
+    const c = await (await fetch('/api/config')).json();
+    meta.textContent = `model=${c.model} · ${c.shape} · ${c.foundry_host || '?'}` + (c.configured ? '' : ' · NOT CONFIGURED');
+  } catch (e) { meta.textContent = 'config error'; }
+}
+
+function append(role, text) {
+  const div = document.createElement('div');
+  div.className = 'msg ' + role;
+  div.textContent = text;
+  log.appendChild(div);
+  log.scrollIntoView({ block: 'end', behavior: 'smooth' });
+  return div;
+}
+
+document.getElementById('form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const input = document.getElementById('input');
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = '';
+  append('user', text);
+  history.push({ role: 'user', content: text });
+  const asstDiv = append('asst', '');
+  const sysDiv = append('sys', '...streaming...');
+
+  let buf = '';
+  let firstChunkClient = null;
+  const t0 = performance.now();
+
+  const resp = await fetch('/api/chat/stream', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ message: text, history }),
+  });
+
+  if (!resp.ok || !resp.body) {
+    sysDiv.textContent = 'request failed: ' + resp.status;
+    return;
+  }
+
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let pending = '';
+  let final = null;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (firstChunkClient === null) firstChunkClient = performance.now() - t0;
+    pending += decoder.decode(value, { stream: true });
+    let idx;
+    while ((idx = pending.indexOf('\n\n')) !== -1) {
+      const block = pending.slice(0, idx);
+      pending = pending.slice(idx + 2);
+      let event = 'message';
+      let dataLine = '';
+      for (const line of block.split('\n')) {
+        if (line.startsWith('event:')) event = line.slice(6).trim();
+        else if (line.startsWith('data:')) dataLine = line.slice(5).trim();
+        // Ignore comment lines starting with ':'
+      }
+      if (event === 'token' && dataLine) {
+        try {
+          const d = JSON.parse(dataLine);
+          if (d.text) { buf += d.text; asstDiv.textContent = buf; }
+        } catch {}
+      } else if (event === 'done' && dataLine) {
+        try { final = JSON.parse(dataLine); } catch {}
+      } else if (event === 'error' && dataLine) {
+        try {
+          const d = JSON.parse(dataLine);
+          sysDiv.textContent = 'error: ' + (d.message || dataLine);
+        } catch { sysDiv.textContent = 'error: ' + dataLine; }
+        return;
+      }
+    }
+  }
+
+  history.push({ role: 'assistant', content: buf });
+  const summary =
+    'first chunk → client: ' + Math.round(firstChunkClient) + 'ms · ' +
+    (final ? `server first token: ${final.first_token_ms}ms · server total: ${final.total_ms}ms · ${final.total_chars} chars` : '(no done event)');
+  sysDiv.textContent = summary;
+});
+
+refreshMeta();
+</script>
+</body>
+</html>
