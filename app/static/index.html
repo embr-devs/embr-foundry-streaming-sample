@@ -14,7 +14,22 @@
     #log { display: flex; flex-direction: column; gap: 8px; min-height: 60vh; }
     .msg { padding: 10px 12px; border-radius: 8px; border: 1px solid var(--border); white-space: pre-wrap; }
     .msg.user { background: var(--user); align-self: flex-end; max-width: 75%; }
-    .msg.asst { background: var(--asst); align-self: flex-start; max-width: 75%; }
+    .msg.asst { background: var(--asst); align-self: flex-start; max-width: 75%; white-space: normal; }
+    .msg.asst.streaming { white-space: pre-wrap; }
+    .msg.asst p { margin: 0 0 0.6em; }
+    .msg.asst p:last-child { margin-bottom: 0; }
+    .msg.asst h1, .msg.asst h2, .msg.asst h3, .msg.asst h4 { margin: 0.5em 0 0.4em; font-weight: 600; }
+    .msg.asst h1 { font-size: 1.15rem; }
+    .msg.asst h2 { font-size: 1.05rem; }
+    .msg.asst h3, .msg.asst h4 { font-size: 0.98rem; }
+    .msg.asst ul, .msg.asst ol { margin: 0.3em 0 0.6em; padding-left: 1.4em; }
+    .msg.asst li { margin: 0.15em 0; }
+    .msg.asst code { background: #0b0d10; padding: 1px 5px; border-radius: 3px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.88em; }
+    .msg.asst pre { background: #0b0d10; padding: 10px 12px; border-radius: 6px; overflow-x: auto; margin: 0.4em 0; }
+    .msg.asst pre code { background: transparent; padding: 0; }
+    .msg.asst strong { font-weight: 600; }
+    .msg.asst a { color: var(--accent); }
+    .msg.asst blockquote { margin: 0.4em 0; padding-left: 10px; border-left: 3px solid var(--border); color: var(--muted); }
     .msg.sys  { background: var(--tool); color: var(--muted); font-size: 0.78rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
     form { display: flex; gap: 8px; margin-top: 16px; }
     input[type=text] { flex: 1; background: var(--panel); color: var(--fg); border: 1px solid var(--border); padding: 10px 12px; border-radius: 6px; font-size: 0.95rem; }
@@ -36,10 +51,22 @@
     </form>
   </main>
 
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.1.5/dist/purify.min.js"></script>
 <script>
 const log = document.getElementById('log');
 const meta = document.getElementById('meta');
 const history = [];
+
+marked.setOptions({ gfm: true, breaks: true });
+
+function renderMarkdown(text) {
+  try {
+    return DOMPurify.sanitize(marked.parse(text));
+  } catch {
+    return text.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+}
 
 async function refreshMeta() {
   try {
@@ -51,7 +78,12 @@ async function refreshMeta() {
 function append(role, text) {
   const div = document.createElement('div');
   div.className = 'msg ' + role;
-  div.textContent = text;
+  if (role === 'asst') {
+    div.classList.add('streaming');
+    div.textContent = text;
+  } else {
+    div.textContent = text;
+  }
   log.appendChild(div);
   log.scrollIntoView({ block: 'end', behavior: 'smooth' });
   return div;
@@ -121,6 +153,8 @@ document.getElementById('form').addEventListener('submit', async (e) => {
   }
 
   history.push({ role: 'assistant', content: buf });
+  asstDiv.classList.remove('streaming');
+  asstDiv.innerHTML = renderMarkdown(buf);
   const summary =
     'first chunk → client: ' + Math.round(firstChunkClient) + 'ms · ' +
     (final ? `server first token: ${final.first_token_ms}ms · server total: ${final.total_ms}ms · ${final.total_chars} chars` : '(no done event)');
